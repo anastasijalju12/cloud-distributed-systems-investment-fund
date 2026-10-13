@@ -127,13 +127,6 @@ kubectl get pods
 
 Steps 3 and 4 need an internet connection: about 1.5 GB for the base images and about 500 MB more for the build (Python base image and pip packages). After that, everything runs offline.
 
-**Running on a machine without internet:** save all images to one file on a machine that has them, then load that file instead of doing steps 3 and 4:
-
-```powershell
-docker save -o images.tar mysql:8.0 mongo:7 redis:7 trufflesuite/ganache-cli investment-fund-authentication:k8s investment-fund-employee:k8s investment-fund-director:k8s
-docker load -i images.tar
-```
-
 ### If the cluster already exists
 
 Check with `kind get clusters` (it should list `fund`), then:
@@ -149,15 +142,13 @@ kubectl get pods
 Instead of kind, you can use the Kubernetes that comes with Docker Desktop (Settings → Kubernetes → Enable Kubernetes). It uses the same image store as Docker, so there's no `kind load` step.
 
 1. Start Docker Desktop and wait until it shows "Kubernetes running".
-2. Get the images, either from the internet:
+2. Pull and build the images:
 
    ```powershell
    docker compose pull authentication-database mongo redis
    $env:BUILDX_NO_DEFAULT_ATTESTATIONS="1"
    docker compose build
    ```
-
-   or from a saved file: `docker load -i images.tar`
 
 3. Check that the images are there: `docker images`
 4. Apply the manifest:
