@@ -1,0 +1,6 @@
+flask
+flask-sqlalchemy
+flask-jwt-extended
+pymysql
+cryptography
+#pip install pymysql cryptography

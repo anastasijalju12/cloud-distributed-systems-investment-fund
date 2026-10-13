@@ -1,0 +1,7 @@
+flask
+flask-jwt-extended
+pymongo
+redis
+web3==6.5.0
+py-solc-x
+setuptools<81

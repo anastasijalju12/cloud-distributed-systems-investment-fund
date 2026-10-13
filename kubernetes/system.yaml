@@ -1,0 +1,372 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fund-config
+data: # addresses, database names and ports, no sensitive data here
+  DATABASE_URL: authentication-database-service
+  DATABASE_NAME: fund
+  DATABASE_USER: root
+  MONGO_HOST: mongo-service
+  MONGO_PORT: "27017" # must be quoted, ConfigMap accepts strings only
+  MONGO_USER: root
+  MONGO_DATABASE: investment_fund
+  REDIS_HOST: redis-service
+  REDIS_PORT: "6379"
+  ETHEREUM_URL: http://ganache-service:8545
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fund-secret
+type: Opaque
+stringData: # stringData accepts plain text, Kubernetes encodes it into Base64
+  DATABASE_PASSWORD: root
+  MONGO_PASSWORD: example
+  JWT_SECRET_KEY: JWT_SECRET_DEV_KEY
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: authentication-database-volume
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain # data survives even after claim is deleted
+  storageClassName: ""
+  hostPath:
+    path: /tmp/investment-fund/mysql
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: authentication-database-claim
+spec:
+  storageClassName: ""
+  volumeName: authentication-database-volume
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mongo-volume
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /tmp/investment-fund/mongo
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-claim
+spec:
+  storageClassName: ""
+  volumeName: mongo-volume
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: authentication-database
+  labels:
+    app: authentication-database
+spec:
+  containers:
+    - name: mysql
+      image: mysql:8.0
+      ports:
+        - containerPort: 3306
+      env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fund-secret
+              key: DATABASE_PASSWORD
+        - name: MYSQL_DATABASE
+          value: fund
+      volumeMounts:
+        - name: authentication-database-data
+          mountPath: /var/lib/mysql
+      readinessProbe: # marks pod ready only when database accepts connections
+        exec:
+          command:
+            - sh
+            - -c
+            - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD"
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        timeoutSeconds: 3
+  volumes:
+    - name: authentication-database-data
+      persistentVolumeClaim:
+        claimName: authentication-database-claim
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authentication-database-service
+spec:
+  type: ClusterIP # only reachable from inside the cluster
+  selector:
+    app: authentication-database
+  ports:
+    - protocol: TCP
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mongo
+  labels:
+    app: mongo
+spec:
+  containers:
+    - name: mongo
+      image: mongo:7
+      ports:
+        - containerPort: 27017
+      env:
+        - name: MONGO_INITDB_ROOT_USERNAME
+          value: root
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fund-secret
+              key: MONGO_PASSWORD
+      volumeMounts:
+        - name: mongo-data
+          mountPath: /data/db
+  volumes:
+    - name: mongo-data
+      persistentVolumeClaim:
+        claimName: mongo-claim
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-service
+spec:
+  type: ClusterIP
+  selector:
+    app: mongo
+  ports:
+    - protocol: TCP
+      port: 27017
+      targetPort: 27017
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  containers:
+    - name: redis
+      image: redis:7
+      ports:
+        - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+    - protocol: TCP
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authentication-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: authentication
+  template:
+    metadata:
+      labels:
+        app: authentication
+    spec:
+      containers:
+        - name: authentication
+          image: investment-fund-authentication:k8s
+          imagePullPolicy: IfNotPresent # image is built locally, do not pull from Docker Hub
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: fund-config
+          env:
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fund-secret
+                  key: DATABASE_PASSWORD
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fund-secret
+                  key: JWT_SECRET_KEY
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authentication-service
+spec:
+  type: NodePort
+  selector:
+    app: authentication
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000
+      nodePort: 30000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: employee-deployment
+spec:
+  replicas: 3 # three replicas
+  selector:
+    matchLabels:
+      app: employee
+  template:
+    metadata:
+      labels:
+        app: employee
+    spec:
+      containers:
+        - name: employee
+          image: investment-fund-employee:k8s
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5001
+          envFrom:
+            - configMapRef:
+                name: fund-config
+          env:
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fund-secret
+                  key: MONGO_PASSWORD
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fund-secret
+                  key: JWT_SECRET_KEY
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: employee-service
+spec:
+  type: NodePort
+  selector:
+    app: employee
+  ports:
+    - protocol: TCP
+      port: 5001
+      targetPort: 5001
+      nodePort: 30001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: director-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: director
+  template:
+    metadata:
+      labels:
+        app: director
+    spec:
+      containers:
+        - name: director
+          image: investment-fund-director:k8s
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5002
+          envFrom:
+            - configMapRef:
+                name: fund-config
+          env:
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fund-secret
+                  key: MONGO_PASSWORD
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fund-secret
+                  key: JWT_SECRET_KEY
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: director-service
+spec:
+  type: NodePort
+  selector:
+    app: director
+  ports:
+    - protocol: TCP
+      port: 5002
+      targetPort: 5002
+      nodePort: 30002
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ganache
+  labels:
+    app: ganache
+spec:
+  containers:
+    - name: ganache
+      image: trufflesuite/ganache-cli
+      ports:
+        - containerPort: 8545
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ganache-service
+spec:
+  type: NodePort
+  selector:
+    app: ganache
+  ports:
+    - protocol: TCP
+      port: 8545
+      targetPort: 8545
+      nodePort: 30003
